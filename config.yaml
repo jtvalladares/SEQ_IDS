@@ -1,0 +1,23 @@
+# Parámetros configurables
+paths:
+  train_dir: /path/to/train
+  val_dir: /path/to/val
+  test_dir: /path/to/test
+training:
+  batch_size: 32
+  epochs: 30
+  lr: 1e-3
+  seed: 42
+model:
+  embedding_dim: 128
+  hidden_size: 256
+  num_layers: 2
+  bidirectional: true
+  dropout: 0.3
+fingerprint:
+  ngram: 2
+  n_bits: 64
+  vocab_mod: 65536
+inference:
+  threshold: 0.9
+  min_packets: 3
