@@ -19,16 +19,94 @@ class SeqClassifier(nn.Module):
         vocab_size: Optional[int] = None,
         use_embedding_layer: bool = True,
     ) -> None:
-        """Inicializa el modelo.
-
-        - Si use_embedding_layer=True, el input serán índices (p.ej. hashed fingerprints modulados)
-        - Alternativamente, el input puede ser vectores ya embebidos.
+        """
+        Args:
+            embedding_dim: tamaño del embedding o del vector de entrada directo.
+            hidden_size: tamaño del estado oculto de la RNN.
+            num_layers: número de capas en LSTM/GRU.
+            bidirectional: True → RNN bidireccional.
+            dropout: dropout entre capas (si num_layers > 1).
+            rnn_type: "lstm" o "gru".
+            vocab_size: requerido si use_embedding_layer=True.
+            use_embedding_layer: si True, espera índices; si False, espera vectores.
         """
         super().__init__()
-        raise NotImplementedError
+
+        self.use_embedding = use_embedding_layer
+
+        # 1) Capa de embedding opcional
+        if use_embedding_layer:
+            if vocab_size is None:
+                raise ValueError("Debes proporcionar vocab_size cuando use_embedding_layer=True.")
+            self.embedding = nn.Embedding(vocab_size, embedding_dim)
+            rnn_input_dim = embedding_dim
+        else:
+            # El usuario entrega directamente vectores embebidos
+            self.embedding = None
+            rnn_input_dim = embedding_dim
+
+        # 2) RNN (LSTM o GRU)
+        rnn_cls = nn.LSTM if rnn_type.lower() == "lstm" else nn.GRU
+        self.rnn = rnn_cls(
+            input_size=rnn_input_dim,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            bidirectional=bidirectional,
+            dropout=dropout if num_layers > 1 else 0.0,
+        )
+
+        # 3) Clasificador final
+        # Si bidireccional, concatenamos ambos lados
+        fc_in = hidden_size * (2 if bidirectional else 1)
+        self.fc = nn.Linear(fc_in, 1)
+
+    # ----------------------------------------------------------------------
 
     def forward(self, packed_sequence: torch.nn.utils.rnn.PackedSequence) -> torch.Tensor:
-        """Recibe PackedSequence y retorna logits shape (batch, 1) o (batch,).
+        """
+        Args:
+            packed_sequence: PackedSequence a procesar por la RNN.
 
-        Debe soportar inferencia paso a paso (ver inference.py)."""
-        raise NotImplementedError
+        Returns:
+            logits: Tensor (batch, 1)
+        """
+        # Asegurar PackedSequence correcto
+        if not isinstance(packed_sequence, torch.nn.utils.rnn.PackedSequence):
+            raise TypeError("forward() espera un PackedSequence.")
+
+        # Si hay embedding, mapear datos antes de repackear
+        if self.use_embedding:
+            data, batch_sizes, sorted_idx, unsorted_idx = (
+                packed_sequence.data,
+                packed_sequence.batch_sizes,
+                packed_sequence.sorted_indices,
+                packed_sequence.unsorted_indices,
+            )
+            emb = self.embedding(data)
+
+            packed_emb = torch.nn.utils.rnn.PackedSequence(
+                data=emb,
+                batch_sizes=batch_sizes,
+                sorted_indices=sorted_idx,
+                unsorted_indices=unsorted_idx,
+            )
+            rnn_out, hidden = self.rnn(packed_emb)
+
+        else:
+            # Caso: viene ya embebido
+            rnn_out, hidden = self.rnn(packed_sequence)
+
+        # hidden:
+        # LSTM → (h_n, c_n)
+        if isinstance(hidden, tuple):
+            hidden = hidden[0]  # tomar h_n
+
+        # hidden shape: (num_layers * num_directions, batch, hidden_size)
+        # Tomamos la última capa
+        last_layer = hidden[-1] if not self.rnn.bidirectional else torch.cat(
+            (hidden[-2], hidden[-1]), dim=1
+        )
+
+        logits = self.fc(last_layer)
+        return logits
